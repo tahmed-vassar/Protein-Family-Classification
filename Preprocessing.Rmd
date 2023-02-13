@@ -1,0 +1,222 @@
+---
+title: "382 project"
+author: "Tasfiq Ahmed/Josh Kim"
+date: "11/6/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+
+```{r}
+data <- read.csv("pdb_data_no_dups.csv")
+head(data, 30)
+```
+
+```{r}
+# standard deviation and mean of densityPercentSol 
+# has very normal distribution 
+sd(data$densityPercentSol[!is.na(data$densityPercentSol)])
+mean(data$densityPercentSol[!is.na(data$densityPercentSol)])
+```
+
+
+```{r}
+# preprocessing data df 
+
+# remove unneeded columns
+data <- data %>% select(-c("pdbxDetails", "publicationYear", "experimentalTechnique", "crystallizationMethod"))
+
+# look at count's of NA's 
+colSums(is.na(data))
+```
+
+```{r}
+head(data)
+```
+
+
+
+```{r}
+# fill in NA's in column with mean 
+#df$crystallizationTempK[is.na(df$crystallizationTempK)] <- mean(df$crystallizationTempK, na.rm=TRUE)
+#df$densityPercentSol[is.na(df$densityPercentSol)] <- mean(df$densityPercentSol, na.rm=TRUE)
+
+
+# considered filling in all NA's with column means 
+# helps KNN by about 2%
+# decided not to bc it adds too much noise to naive bayes - performance tanks 
+
+
+#data[, 5:10] <- lapply(data[, 5:10], function(x) replace(x, is.na(x), mean(x, na.rm = TRUE)))
+```
+
+
+
+```{r}
+seq <- read.csv("pdb_data_seq.csv")
+head(seq, 30)
+```
+
+```{r}
+# remove duplicate columns 
+seq <- seq %>% select(-c("residueCount", "macromoleculeType"))
+```
+
+```{r}
+df <- merge(data, seq, by = "structureId")
+
+head(df, 30)
+```
+
+
+
+```{r}
+# filter to only contain proteins 
+df <- df[df$macromoleculeType == 'Protein', ]
+
+# all rows are proteins - macromoleculeType no longer needed
+df <- df %>% select(-c("macromoleculeType"))
+
+head(df, 50)
+```
+
+```{r}
+sort(table(df$classification), decreasing = T)
+#nrow(df)
+```
+
+```{r}
+# remove rows with duplicated sequences '
+# we go from 346325 samples to 166681 samples 
+# maybe change to classification and sequence 
+df <- df[!duplicated(df[ , c("structureId","sequence")]),]
+
+# drop chainID - should only have 1 chain per protein 
+df <- df %>% select(-c("chainId"))
+
+nrow(df)
+```
+
+```{r}
+# proteins with different structureID and classification have the same sequence
+head(df,30)
+df[df$sequence == "VLSEGEWQLVLHVWAKVEADVAGHGQDILIRLFKSHPETLEKFDRFKHLKTEAEMKASEDLKKHGVTVLTALGAILKKKGHHEAELKPLAQSHATKHKIPIKYLEFISEAIIHVLHSRHPGDFGADAQGAMNKALELFRKDIAAKYKELGYQG", ]
+```
+
+```{r}
+head(df, 30)
+```
+
+
+```{r}
+library(stringr)
+
+# split classification by punctuation, and grab first element
+# go from 3583 classes to 1754
+df$classification <- df$classification %>% sapply(function(s){str_split(s, "[.,/(]")[[1]][1]})
+length(unique(df$classification))
+```
+
+```{r}
+# imbalanced dataset 
+sort(table(df$classification), decreasing = TRUE)
+```
+
+
+```{r}
+# top 7 classes 
+classes <- c("hydrolase", "transferase", "oxidoreductase", "immune system", "transcription", "lyase", "transport protein")
+
+# uniform casing 
+df$classification <- tolower(df$classification)
+
+# go from 165,423 to 97406 samples 
+# go from 1434 classes to 7 classes
+df <- df[df$classification %in% classes, ]
+
+dim(df)
+```
+
+```{r}
+library(RecordLinkage)
+
+# count number of occurrences of each amino acid 
+aa_list <- list("F", "L", "I", "M", "V", "S", "P", "T",
+                "A", "Y", "H", "Q", "N", "K", 
+                "D","E", "C", "W", "R", "S", "G")
+
+# oops list has to be characters
+aa_list <- as.character(aa_list)
+
+###  MOVE TO END - THIS SHOULDNT BE DONE BEFORE PREPROCESSING DUPLICATES 
+
+# create columns of amino acid counts 
+# count ocurrences of amino acids in each sequence  
+for (i in 1:21) {
+  col_name <- paste(aa_list[i], "count", sep = "_")
+  df <- df %>% mutate(!!col_name := sapply(df$sequence, function(y){str_count(y, aa_list[i])}))
+} 
+
+
+# remove residueCount since it is now correlated with amino acid counts
+df <- df %>% select(-c("residueCount"))
+
+head(df, 30)
+```
+
+
+```{r}
+nrow(df)
+```
+
+```{r}
+# some proteins with different structureID's have same exact sequence and classification 
+df <- df[!duplicated(df[ , c("classification","sequence")]),]
+
+nrow(df)
+```
+
+```{r}
+head(df, 30)
+```
+
+
+
+```{r}
+#library(mice)
+
+# use mice to impute values for NA's 
+#tempData <- mice(df, m=5, maxit=10, meth='pmm', seed=50)
+#summary(tempData)
+```
+
+```{r}
+#completedData <- complete(tempData,1)
+#completedData
+```
+
+
+```{r}
+# maybe omit all NA's 
+nrow(df %>% na.omit())
+```
+
+
+```{r}
+# export df
+write.csv(df %>% na.omit(),"./preprocessed_df.csv", row.names = F)
+
+# decided to drop all na's instead - refer above 
+#write.csv(df,"./preprocessed_df.csv", row.names = F)
+```
+
+
+

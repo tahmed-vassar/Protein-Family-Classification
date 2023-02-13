@@ -1,0 +1,502 @@
+---
+title: "382 model building"
+author: "Josh Kim/Tasfiq Ahmed"
+date: "12/1/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Loads all the data environment variables
+```{r}
+# load environment variables for LSTM
+library(raster)
+
+load("LSTM.RData")
+```
+
+#loads libraries
+```{r}
+library(dplyr)
+library(tidyr)
+library(abind)
+```
+
+```{r}
+# read csv 
+df <- read.csv("preprocessed_df.csv")
+mice_df <- read.csv("preprocessed_mice_df.csv")
+
+head(df, 30)
+```
+
+```{r}
+nrow(df)
+```
+
+```{r}
+sort(table(df$classification), decreasing = TRUE)
+```
+
+## Model Building
+
+### TRAIN TEST SPLIT
+```{r}
+set.seed(382)
+n <- nrow(df) ## get the number of observations
+trainIDs <- sample(x = 1:n, size = .8 * n) ## 50-50 split, get row ID's for the training set
+train <- df[trainIDs, -1]
+test <- df[-trainIDs, -1]
+
+train
+```
+
+```{r}
+# normalize train and test data
+train[, -c(1,8)]<- as.data.frame(scale(train[, -c(1,8)]))
+test[, -c(1,8)]<- as.data.frame(scale(test[, -c(1,8)]))
+
+head(train, 20)
+```
+
+
+```{r}
+# MICE Train and test split 
+set.seed(382)
+n_mice <- nrow(mice_df) ## get the number of observations
+trainIDs_mice <- sample(x = 1:n_mice, size = .8 * n_mice) ## 80-20 split, get row ID's for the training set
+train_mice <- mice_df[trainIDs_mice, -1]
+test_mice <- mice_df[-trainIDs_mice, -1]
+
+head(train_mice, 50)
+```
+
+
+```{r}
+# MICE normalize  
+train_mice[, -c(1,2,10)]<- as.data.frame(scale(train_mice[, -c(1,2,10)]))
+test_mice[, -c(1,2,10)]<- as.data.frame(scale(test_mice[, -c(1,2,10)]))
+
+head(train_mice, 50)
+```
+
+
+### NAIVE BAYES
+```{r}
+library(e1071)
+
+set.seed(382)  # Setting Seed
+nb <- naiveBayes(classification ~ ., data = train)
+
+nb_preds <- predict(nb, test)
+```
+
+
+```{r}
+library(MLmetrics)
+
+# Naive Bayes accuracy 
+nb_acc <- mean(nb_preds == test$classification)
+# Naive Bayes f1
+nb_f1 <- F1_Score(y_true = test$classification, y_pred = nb_preds)
+
+
+print(nb_acc)
+print(nb_f1)
+```
+
+
+```{r}
+library(caret)
+
+# plot conf matrix for NB w/ NA's removed
+
+nb_cm <- confusionMatrix(as.factor(nb_preds), as.factor(test$classification), dnn = c("Prediction", "Reference"))
+
+nb_plt <- as.data.frame(nb_cm$table)
+nb_plt$Prediction <- factor(nb_plt$Prediction, levels=rev(levels(nb_plt$Prediction)))
+labels <- c("hydrolase", "immune system", "lyase", "oxidoreductase","transcription","transferase","transport protein")
+
+png("nb_heatmap.png")
+
+nb_heatmap <- ggplot(nb_plt, aes(Prediction,Reference, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels= rev(labels)) +
+        scale_y_discrete(labels= labels) + 
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+        ggtitle("Naive Bayes Confusion Matrix")
+
+print(nb_heatmap)
+dev.off()
+```
+
+```{r}
+# MICE NB 
+set.seed(382)  # Setting Seed
+nb_mice <- naiveBayes(classification ~ ., data = train_mice)
+nb_mice_preds <- predict(nb_mice, test_mice)
+
+
+# MICE Naive Bayes accuracy 
+nb_mice_acc <- mean(nb_mice_preds == test_mice$classification)
+# MICE Naive Bayes f1
+nb_mice_f1 <- F1_Score(y_true = test_mice$classification, y_pred = nb_mice_preds)
+
+print(nb_mice_acc)
+print(nb_mice_f1)
+```
+
+
+```{r}
+# plot conf matrix for nb w/ MICE
+
+nb_mice_cm <- confusionMatrix(as.factor(nb_mice_preds), as.factor(test_mice$classification), dnn = c("Prediction", "Reference"))
+
+nb_mice_plt <- as.data.frame(nb_mice_cm$table)
+nb_mice_plt$Prediction <- factor(nb_mice_plt$Prediction, levels=rev(levels(nb_mice_plt$Prediction)))
+
+labels <- c("hydrolase", "immune system", "lyase", "oxidoreductase","transcription","transferase","transport protein")
+
+png("nb_mice_heatmap.png")
+
+nb_mice_heatmap <- ggplot(nb_mice_plt, aes(Prediction,Reference, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels= rev(labels)) +
+        scale_y_discrete(labels= labels) + 
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+        ggtitle("Naive Bayes w/ MICE Confusion Matrix")
+
+print(nb_mice_heatmap)
+dev.off()
+```
+
+
+### KNN
+
+```{r}
+library(class)
+set.seed(382)
+
+# extract labels for training set for input to KNN
+train_X <- train[, -c(1,8)]
+train_Y <- train$classification
+
+test_X <- test[, -c(1,8)]
+test_Y <- test$classification
+
+# generally recommended to use sqrt of number of obs in training set
+neighbors <- sqrt(nrow(train)) %>% round()
+
+# knn function returns list of predictions
+knn <- knn(train = train_X, test = test_X, cl = train_Y, k = neighbors)
+```
+
+```{r}
+# KNN accuracy
+knn_acc <- mean(knn == test_Y)
+# KNN f1 
+knn_f1 <- F1_Score(y_true = test$classification, y_pred = knn)
+
+print(knn_acc)
+print(knn_f1)
+```
+
+
+```{r}
+# make conf matrix for knn w/ NA's removed
+knn_cm <- confusionMatrix(as.factor(knn), as.factor(test$classification), dnn = c("Prediction", "Reference"))
+
+knn_plt <- as.data.frame(knn_cm$table)
+knn_plt$Prediction <- factor(knn_plt$Prediction, levels=rev(levels(knn_plt$Prediction)))
+
+labels <- c("hydrolase", "immune system", "lyase", "oxidoreductase","transcription","transferase","transport protein")
+
+png("knn_heatmap.png")
+knn_heatmap <- ggplot(knn_plt, aes(Prediction,Reference, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels= rev(labels)) +
+        scale_y_discrete(labels= labels) + 
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+        ggtitle("KNN Confusion Matrix")
+
+print(knn_heatmap)
+dev.off()
+```
+
+
+```{r}
+# MICE KNN
+set.seed(382)
+
+# extract labels for training set for input to KNN
+mice_train_X <- train_mice[, -c(1,2,10)]
+mice_train_Y <- train_mice$classification
+
+mice_test_X <- test_mice[, -c(1,2,10)]
+mice_test_Y <- test_mice$classification
+
+# generally recommended to use sqrt of number of obs in training set
+neighbors_mice <- sqrt(nrow(train_mice)) %>% round()
+
+# knn function returns list of predictions
+knn_mice <- knn(train = mice_train_X, test = mice_test_X, cl = mice_train_Y, k = neighbors_mice)
+
+# KNN accuracy
+knn_mice_acc <- mean(knn_mice == mice_test_Y)
+# KNN f1 
+knn_mice_f1 <- F1_Score(y_true = test_mice$classification, y_pred = knn_mice)
+
+print(knn_mice_acc)
+print(knn_mice_f1)
+```
+
+```{r}
+# make conf matrix for knn w/ mice
+knn_mice_cm <- confusionMatrix(as.factor(knn_mice), as.factor(test_mice$classification), dnn = c("Prediction", "Reference"))
+
+knn_mice_plt <- as.data.frame(knn_mice_cm$table)
+knn_mice_plt$Prediction <- factor(knn_mice_plt$Prediction, levels=rev(levels(knn_mice_plt$Prediction)))
+
+labels <- c("hydrolase", "immune system", "lyase", "oxidoreductase","transcription","transferase","transport protein")
+
+png("knn_mice_heatmap.png")
+knn_mice_heatmap <- ggplot(knn_mice_plt, aes(Prediction,Reference, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_gradient(low="white", high="#009194") +
+        labs(x = "Reference",y = "Prediction") +
+        scale_x_discrete(labels= rev(labels)) +
+        scale_y_discrete(labels= labels) + 
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+        ggtitle("KNN w/ MICE Confusion Matrix")
+
+print(knn_mice_heatmap)
+dev.off()
+```
+
+
+```{r}
+# write table detailing results
+remove_vs_mice <- matrix(ncol = 5, nrow = 0)
+col_names <- c("Model", "NA_Removed_Accuracy", "NA_Removed_F1", "MICE_Accuracy", "MICE_F1")
+colnames(remove_vs_mice) <- col_names
+
+remove_vs_mice <- rbind(remove_vs_mice, list("Naive Bayes", nb_acc, nb_f1, nb_mice_acc, nb_mice_f1))
+remove_vs_mice <- rbind(remove_vs_mice, list("KNN", knn_acc, knn_f1, knn_mice_acc, knn_mice_f1))
+
+write.table(remove_vs_mice, file="remove_vs_matrix.txt", row.names=FALSE, col.names=FALSE, quote = F)
+
+```
+
+
+### Running LSTM
+
+#### Split into training, test, and validation set
+```{r}
+set.seed(382)
+
+# drop unneeded columns 
+df_lstm <- df %>% dplyr::select(-c("structureId","resolution", "densityPercentSol", "structureMolecularWeight", "crystallizationTempK", "densityMatthews", "phValue"))
+
+spec = c(train_LSTM = .8, test_LSTM = .1, validate_LSTM = .1)
+
+g = sample(cut(
+  seq(nrow(df_lstm)), 
+  nrow(df_lstm)*cumsum(c(0,spec)),
+  labels = names(spec)
+))
+
+res = split(df_lstm, g)
+```
+
+```{r}
+df_train <- res$train_LSTM
+df_test <- res$test_LSTM
+df_val <- res$validate_LSTM
+```
+
+```{r}
+# tensorflow/keras installation
+
+library(tensorflow)
+#install_tensorflow(version = "nightly" , envname = "/Users/steveh/Downloads/2022_23_vassar/MATH_382_Projects/.venv")
+
+#install.packages("keras")
+library(keras)
+#install_keras(envname = "/Users/steveh/Downloads/2022_23_vassar/MATH_382_Projects/.venv")
+
+library(reticulate)
+```
+
+
+```{r}
+
+#encode each amino acid in sequence with an integer
+
+aa <- c('A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L',
+        'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y')
+
+#aa_encodings <- hash(aa, 1:20)
+
+get_char_value <- function(char){
+  # match returns index of element in list 
+  # if element not in list, returns NA
+  val <- match(char, aa)
+  # for amino acids not in the list of most prevalent amino acids, encode with a 0 
+  if (is.na(val)){
+    return(0)
+  }
+  else{
+    return(val)
+  }
+}
+
+integer_encoding <- function(seq){
+  # for every character in sequence
+  # get encoding if in dict, otherwise return 0
+  seq_split <- unlist(strsplit(seq, ""))
+  encoding <- lapply(seq_split, get_char_value)
+  return(encoding)
+}
+
+train_encode <- lapply(df_train$sequence, integer_encoding)
+test_encode <- lapply(df_test$sequence, integer_encoding)
+val_encode <- lapply(df_val$sequence, integer_encoding)
+```
+
+
+```{r}
+#Turn encoding into array to get dimensions
+arr_train <- data.matrix(train_encode)
+arr_test <- data.matrix(test_encode)
+arr_val <- data.matrix(val_encode)
+
+dim(arr_test)
+```
+
+
+```{r}
+# longest sequence in data
+max_len <- max(unlist(lapply(df_lstm$sequence, nchar)))
+
+# pad sequences so they are all same length - append 0's at the end 
+x_train <- pad_sequences(arr_train, maxlen = max_len, padding='post', truncating='post')
+x_test <- pad_sequences(arr_test, maxlen = max_len, padding='post', truncating='post')
+x_val <- pad_sequences(arr_val, maxlen = max_len, padding='post', truncating='post')
+```
+
+```{r}
+# Ended up not needing this 
+# one hot encode sequences
+#train_ohe_lstm <- to_categorical(x_train)
+#val_ohe_lstm <- to_categorical(x_val)
+#test_ohe_lstm <- to_categorical(x_test)
+```
+
+```{r}
+dim(train_ohe)
+```
+
+
+```{r}
+library(CatEncoders)
+
+# convert class labels to integers
+train_lab_enc = LabelEncoder.fit(df_train$classification)
+
+train_trans <- transform(train_lab_enc, df_train$classification)
+test_trans <- transform(train_lab_enc, df_test$classification)
+val_trans <- transform(train_lab_enc, df_val$classification)
+```
+
+```{r}
+# one hot encode class
+y_train <- to_categorical(train_trans)
+y_test <- to_categorical(test_trans)
+y_val <- to_categorical(val_trans)
+```
+
+
+```{r}
+cat('x_train shape:', dim(x_train), '\n')
+cat('x_test shape:', dim(x_test), '\n')
+cat('x_val shape:', dim(x_val), '\n')
+```
+
+
+#Building LSTM model
+```{r}
+lstm_mod <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_len+1, output_dim = 32, input_length = max_len) %>%
+  layer_lstm(units = 32, return_sequence = TRUE, input_shape= c(max_len, 21)) %>%
+  layer_flatten() %>% 
+  layer_dense(units = 8, activation = "softmax")
+
+lstm_mod %>%
+  compile(
+    optimizer = "adam",
+    loss = "categorical_crossentropy",
+    metrics = c("accuracy")
+  )
+
+lstm_mod
+```
+
+
+```{r}
+batch_size <- 256
+
+lstm_history <- lstm_mod %>%
+  fit(
+    x_train,
+    y_train,
+    epochs = 10,
+    batch_size = batch_size,
+    verbose = TRUE,
+    validation_data = list(x_val,y_val)
+  )
+
+lstm_history
+```
+
+```{r}
+lstm_train_acc <- evaluate(x_train, y_train)
+
+lstm_acc <- evaluate(x_test, y_test)
+
+print(lstm_train_acc)
+print(lstm_acc)
+```
+
+
+```{r}
+lstm_preds <- predict(lstm_mod, x_test)
+lstm_acc <- mean(lstm_preds == y_test)
+
+table(Predicted=lstm_preds, Actual=y_test)
+```
+
+
+```{r}
+# save environment variables
+
+#save.image(file='LSTM.RData')
+```
+
+
+
+
+
+
+
+
+
+
